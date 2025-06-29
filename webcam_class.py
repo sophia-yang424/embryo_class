@@ -57,6 +57,7 @@ while True:
     #technically since for us, we pass one frame at a time, so doing the [0] is redundant
     #  its like a list with one object, but to get the object we still need to index to get first val
     #makes it scalable in case we do more frames at once
+    #IT IS NOT grabbing top prediction for tha object, to access the list of all possible predictions its more complicated
     
 
   #magenta box repreent our ROI (the box we use to determine whether to trigger classification)
