@@ -6,34 +6,30 @@ from ultralytics import YOLO
 import threading
 import queue
 import torch
+import torchvision.transforms as transforms
 from PIL import Image
 
-# Initialize YOLO model (used for detection only)
+# yolo for detection only
 model = YOLO('yolov8n.pt')
 
-# Load a pretrained classification model (e.g., ResNet18)
-import tensorflow as tf
-classification_model = tf.keras.models.load_model('your_tensorflow_model.h5')
+# replace this with our model later
+classification_model = torch.load('your_classifier.pt')
+classification_model.eval()
 
-# Use custom labels for your TensorFlow model
-imagenet_labels = ["bad", "good"]
-imagenet_labels_url = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt"
-imagenet_labels = requests.get(imagenet_labels_url).text.strip().split("\n")
 
-# Define transform for classifier input
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
 
-def run_pretrained_classifier(cropped_img):
-    image = Image.fromarray(cv2.cvtColor(cropped_img, cv2.COLOR_BGR2RGB)).resize((224, 224))
-    input_tensor = tf.keras.utils.img_to_array(image) / 255.0
-    input_tensor = tf.expand_dims(input_tensor, 0)  # Add batch dimension
-    output = classification_model.predict(input_tensor)
-    predicted = tf.argmax(output[0]).numpy()
-    return predicted
+def run_custom_classifier(cropped_img):
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    image = Image.fromarray(cv2.cvtColor(cropped_img, cv2.COLOR_BGR2RGB))
+    input_tensor = transform(image).unsqueeze(0)  # Add batch dimension
+    with torch.no_grad():
+        outputs = classification_model(input_tensor)
+        _, predicted = torch.max(outputs, 1)
+    return "good" if predicted.item() == 1 else "bad"
 
 # Open webcam
 cap = cv2.VideoCapture(0)
@@ -44,8 +40,13 @@ SAVE_DIRECTORY = "C:/Users/sophi/OneDrive/Desktop/embryo_directory"
 os.makedirs(SAVE_DIRECTORY, exist_ok=True)
 
 detection_queue = queue.Queue()
+#FIFO
+#i made it global to make it easier to pass around between functions
+#its used to enqueue embryos for classifcation in the main try block program
+#then its run in the background in classificatino worker thread in parallel to main program
 tracked_object = None  # initialize the tracked object
 
+#currenty middle 40% of screen, can chnage later
 def is_inside_roi(box, frame_width, frame_height):
     roi_x1 = int(frame_width * 0.3)
     roi_y1 = int(frame_height * 0.3)
@@ -56,6 +57,7 @@ def is_inside_roi(box, frame_width, frame_height):
     center_y = int((y1 + y2) / 2)
     return roi_x1 <= center_x <= roi_x2 and roi_y1 <= center_y <= roi_y2
 
+#tracks the movement of the object, if theres a lot of overlap between frames, its likely the same object since only one embryo per frame
 def calculate_iou(box1, box2):
     x1_1, y1_1, x2_1, y2_1 = box1
     x1_2, y1_2, x2_2, y2_2 = box2
@@ -70,6 +72,7 @@ def calculate_iou(box1, box2):
     area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
     union = area1 + area2 - intersection
     return intersection / union if union > 0.5 else 0.0
+#set iou threshold to 0.5 for now
 
 def save_detection(frame, box):
     x1, y1, x2, y2 = box
@@ -87,14 +90,11 @@ def send_signal():
 def classify_object(frame, box):
     x1, y1, x2, y2 = box
     cropped = frame[y1:y2, x1:x2]
-    result = run_pretrained_classifier(cropped)
-    label = imagenet_labels[result]
-    print(f"[CLASSIFIED] Class index: {result}, Label: {label}")
-    if label.lower() in ["person", "tench", "goldfish", "embryo"]:
+    result = run_custom_classifier(cropped)
+    print(f"[CLASSIFIED] Result: {result}")
+    if result == "good":
         save_detection(frame, box)
         send_signal()
-    else:
-        print(f"[SIGNAL] Bad embryo detected. Label: {label}")
 
 def classification_worker():
     while True:
@@ -109,7 +109,10 @@ def classification_worker():
             continue
 
 classification_thread = threading.Thread(target=classification_worker, daemon=True)
+#im using threading so it can run as a parallel process
 classification_thread.start()
+#target=classification_worker means: run that function in the new thread.
+#daemon=True means: this thread will automatically shut down when the main program in try block ends
 
 print("Starting detection... Press 'q' to quit.")
 
